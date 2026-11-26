@@ -244,6 +244,12 @@ function vpcSite(site, instance) {
 // is not read as "no VPC", which would send the enterprise's tokens to the
 // public hosts: the account has to be signed in to again.
 function siteOf(site, a) {
+  // qwenwork-ent patch: an enterprise flagship serves web, accounts and
+  // models on one host; its account records that host as enterpriseHost.
+  if (typeof a?.enterpriseHost === "string" && a.enterpriseHost) {
+    const base = `https://${a.enterpriseHost}`
+    return { ...site, web: base, openapi: base, api: base, vpc: a.enterpriseHost, redirect: "" }
+  }
   if (a?.vpc === undefined || a?.vpc === null || a?.vpc === "") return site
   const s = vpcSite(site, a.vpc)
   if (!s) throw new SignInGone(`${site.name}: the account's VPC instance "${a.vpc}" isn't one; sign in again`)
@@ -1477,4 +1483,4 @@ export const QoderAuthPlugin = makePlugin(SITES.qoder)
 export const QoderCNAuthPlugin = makePlugin(SITES["qoder-cn"])
 
 // for tests
-export const _internal = { vpcInstance, vpcSite, parseUsage, gfmt, when, failure, modelInfo, qoderBody, SITES, decodeBody, events }
+export const _internal = { vpcInstance, vpcSite, deviceSignIn, parseUsage, gfmt, when, failure, modelInfo, qoderBody, SITES, decodeBody, events }

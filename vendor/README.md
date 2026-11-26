@@ -6,33 +6,47 @@ The shared QwenWork/Qoder adapter copied from
 `448f52d9bcfe3e2f20e3eb7dffb386e5ae0d87e4f4eaf3d2e20f5c76c4d4b63b`, MIT — see
 `LICENSE` here).
 
-It is **not** byte-identical to upstream: this fork carries one small patch,
-because an enterprise account renews its device token under its organisation
-identity (`target: "biz"` with the account's `team_id`), which the desktop client
-also does. Upstream always renews as the public `"c"`.
+It is **not** byte-identical to upstream. This fork carries three small
+patches, all of them the same behaviour magpie's community QwenWork plugin has:
 
-The whole patch is four hunks:
+## 1. An enterprise flagship serves everything on one host
 
-1. `refreshDevice(site, refresh, chat = false, account)` — the account is passed
-   in.
-2. The refresh body becomes:
+`siteOf` returns the account's `enterpriseHost` for web, openapi and api:
 
-   ```js
-   const target = account?.refreshTarget ?? site.deviceRefreshTarget
-   body: {
-     refresh_token: refresh,
-     ...(target ? { target } : {}),
-     ...(target === "biz" && account?.teamId ? { team_id: account.teamId } : {}),
-   }
-   ```
+```js
+if (typeof a?.enterpriseHost === "string" && a.enterpriseHost) {
+  const base = `https://${a.enterpriseHost}`
+  return { ...site, web: base, openapi: base, api: base, vpc: a.enterpriseHost, redirect: "" }
+}
+```
 
-3. `renew()` passes the account: `refreshDevice(s, a.refresh, true, a)`.
-4. `deviceToken()` passes the account:
-   `refreshDevice(siteOf(site, a), a.deviceRefresh, !!a.deviceChat, a)`.
+QwenWork's flagship does **not** split into `<host>-openapi` / `<host>-gateway`
+(those names are NXDOMAIN); polling them leaves the sign-in stuck.
 
-With no `account.refreshTarget` (a personal account) the body is exactly what
-upstream sends, so nothing changes for the personal provider — verified by
-running the upstream `check.mjs` against this copy.
+## 2. An enterprise account renews as `biz` with its team
 
-When updating from upstream, re-apply these four hunks and re-run both
-`node check.mjs` here and the upstream check.
+`refreshDevice(site, refresh, chat = false, account)` now reads the account's
+own identity:
+
+```js
+const target = account?.refreshTarget ?? site.deviceRefreshTarget
+body: {
+  refresh_token: refresh,
+  ...(target ? { target } : {}),
+  ...(target === "biz" && account?.teamId ? { team_id: account.teamId } : {}),
+}
+```
+
+and both call sites (`renew`, `deviceToken`) pass the account. With no
+`account.refreshTarget` (a personal account) the body is exactly what upstream
+sends.
+
+## 3. The single-host sign-in is reachable from the provider
+
+`_internal` also exports `deviceSignIn`, so `index.mjs` can start the device
+flow against the enterprise's one host without the adapter's split-host VPC
+method.
+
+Everything else is upstream. The upstream `check.mjs` still passes against this
+copy (personal accounts take the unchanged path). When updating from upstream,
+re-apply these hunks and run both checks.

@@ -1,22 +1,22 @@
-// QwenWork 企业版（旗舰版 · 专属域名 / VPC）provider for magpie / OpenCode.
+// QwenWork 企业版（旗舰版 · 专属域名）provider for magpie / OpenCode.
 //
-// The protocol is the personal QwenWork provider's — the PKCE device flow, the
-// COSY envelope and the agent_chat_generation codec all live in
-// vendor/qoder.mjs — but every request goes to the account's own VPC instance,
-// the hosts QwenWork's desktop client builds from its custom-domain setting:
+// The enterprise flagship serves the sign-in page, the account API and the
+// model gateway on ONE host — the enterprise's own domain, as its management
+// console shows it:
 //
-//   https://<instance>.vpc.qwenwork.cn           sign-in page / web
-//   https://<instance>-openapi.vpc.qwenwork.cn   accounts, tokens, usage
-//   https://<instance>-gateway.vpc.qwenwork.cn   models, agent_chat_generation
+//   https://gehua.vpc.qwenwork.cn/device/selectAccounts   sign-in
+//   https://gehua.vpc.qwenwork.cn/api/v1/...              accounts, tokens, usage
+//   https://gehua.vpc.qwenwork.cn/algo/...                models, agent chats
 //
-// The instance is asked once, at sign-in, and kept on the account; renewals,
-// model listings and chats are served from the same hosts afterwards. An
-// account that carries no instance is refused rather than sent to the public
-// gateway, so an enterprise token never leaves the enterprise hosts.
+// There is no -openapi / -gateway split on the flagship: those hosts do not
+// exist (NXDOMAIN), and polling them is why a sign-in can sit at "signing in"
+// forever. The host is kept on the account, so renewals, model listings and
+// chats stay on it. A record without a host is refused rather than sent to the
+// public gateway.
 //
-// Enterprise (premiumIam) deployments usually ship their own OAuth client id
-// in their deployment profile; set QWENWORK_ENT_CLIENT_ID to it. Without one
-// the personal client id is used, which the enterprise gateway may refuse.
+// The host is asked once at sign-in, or preset with QWENWORK_ENT_DOMAIN.
+// Enterprise (premiumIam) deployments usually ship their own OAuth client id;
+// set QWENWORK_ENT_CLIENT_ID to it.
 import { createPublicKey } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
@@ -45,46 +45,34 @@ function origin(name) {
   return url.origin
 }
 
-// ---- the instance's hosts ----------------------------------------------------
+// ---- the enterprise's host ---------------------------------------------------
 
-const NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
+const HOST_RE = /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/
 
-// instanceName is what the user typed as QwenWork's custom-domain prefix: a
-// bare prefix ("acme"), one of the instance's hosts (acme.vpc.qwenwork.cn,
-// acme-openapi.… or acme-gateway.…), or an https:// address with no path.
-// Anything else (http://, an IP, another domain, a path or query) names none.
-function instanceName(input, domain) {
+// enterpriseHost is what the user typed: the enterprise's domain as the
+// console shows it ("gehua.vpc.qwenwork.cn"), an https:// address with no
+// path, or a bare prefix ("gehua") that takes the configured VPC suffix.
+// Anything else (http://, an IP, a port, a path or query, a loopback or
+// intranet suffix) names none.
+function enterpriseHost(input, suffix) {
   let e = String(input ?? '').trim().toLowerCase()
-  if (!e || !domain) return undefined
+  if (!e) return undefined
   if (/^[a-z][a-z\d+.-]*:\/\//.test(e)) {
     let u
     try { u = new URL(e) } catch { return undefined }
     if (u.protocol !== 'https:' || u.username || u.password || u.port || u.search || u.hash || (u.pathname !== '' && u.pathname !== '/')) return undefined
     e = u.hostname
-  }
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(e)) return undefined
-  let name = e
-  if (e.endsWith('.' + domain)) {
-    name = e.slice(0, e.length - domain.length - 1)
-    for (const suffix of ['-openapi', '-gateway']) if (name.endsWith(suffix)) name = name.slice(0, -suffix.length)
-  } else if (e.includes('.')) return undefined
-  return NAME_RE.test(name) && name.length <= 63 ? name : undefined
+  } else if (e.includes('/') || e.includes(':') || e.includes('?') || e.includes('#')) return undefined
+  if (!e.includes('.')) e = `${e}.${suffix}`
+  if (e.length > 253 || !HOST_RE.test(e)) return undefined
+  if (/^(localhost|.*\.localhost|.*\.local|.*\.internal)$/.test(e)) return undefined
+  return e
 }
 
-function requireInstance(input, domain) {
-  const name = instanceName(input, domain)
-  if (!name) throw new Error(`${NAME}: "${String(input ?? '').slice(0, 100)}" is not a VPC instance — enter its prefix (letters, digits, -) or https://<instance>.${domain}`)
-  return name
-}
-
-// hostsFor is the instance's three hosts, the paths unchanged, as QwenWork's
-// desktop builds them: <instance>.…, <instance>-openapi.… and <instance>-gateway.…
-function hostsFor(name, domain) {
-  return {
-    web: `https://${name}.${domain}`,
-    openapi: `https://${name}-openapi.${domain}`,
-    api: `https://${name}-gateway.${domain}`,
-  }
+function requireHost(input, suffix) {
+  const host = enterpriseHost(input, suffix)
+  if (!host) throw new Error(`${NAME}: "${String(input ?? '').slice(0, 100)}" is not an enterprise domain — enter gehua or https://gehua.${suffix}`)
+  return host
 }
 
 // num renders a credit count as magpie shows one: no trailing zeros, at most
@@ -95,19 +83,19 @@ const num = (v) => {
   return String(Math.round(n * 100) / 100)
 }
 
-// enterpriseUsage reads the account's plan, organisation and credits off its
-// own instance's account-context. A deployment whose account-context lives
-// elsewhere can name the path with QWENWORK_ENT_ACCOUNT_CONTEXT_PATH.
-function enterpriseUsage({ domain, accountContextPath }) {
+// enterpriseUsage reads the account's plan, organisation and credits off the
+// same enterprise host. A deployment whose account-context lives elsewhere can
+// name the path with QWENWORK_ENT_ACCOUNT_CONTEXT_PATH.
+function enterpriseUsage({ accountContextPath }) {
   return async (getAuth) => {
     let signIn = 'kept'
     try {
       const a = await getAuth()
       if (a?.type !== 'oauth' || !String(a.access ?? '').trim()) return { error: `${NAME}：尚未登录`, signIn: 'expired' }
       if (a.expires > 0 && a.expires <= Date.now()) return { error: `${NAME}：登录已过期，请重新登录`, signIn: 'expired' }
-      const name = instanceName(a.vpc, domain)
-      if (!name) return { error: `${NAME}：该账号未绑定专属域名实例，请重新登录企业版`, signIn: 'expired' }
-      const res = await fetch(hostsFor(name, domain).openapi + accountContextPath, {
+      const host = a.enterpriseHost
+      if (typeof host !== 'string' || !HOST_RE.test(host)) return { error: `${NAME}：账号未记录企业域名，请重新登录企业版`, signIn: 'expired' }
+      const res = await fetch(`https://${host}${accountContextPath}`, {
         headers: { Accept: 'application/json', Authorization: `Bearer ${a.access}` },
         signal: AbortSignal.timeout(20_000),
       })
@@ -142,12 +130,15 @@ function enterpriseUsage({ domain, accountContextPath }) {
 }
 
 export async function QwenWorkAuthPlugin({ client }) {
-  const domain = setting('VPC_DOMAIN').toLowerCase()
-  if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(domain) || domain.includes('..')) throw new Error('QWENWORK_ENT_VPC_DOMAIN must be a DNS name such as vpc.qwenwork.cn')
+  const suffix = setting('VPC_DOMAIN').toLowerCase()
+  if (!HOST_RE.test(suffix)) throw new Error('QWENWORK_ENT_VPC_DOMAIN must be a DNS name such as vpc.qwenwork.cn')
   const clientId = setting('CLIENT_ID')
   const rsa = setting('RSA_PUBLIC_KEY').replaceAll('\\n', '\n')
   try { if (createPublicKey(rsa).asymmetricKeyType !== 'rsa') throw new Error() } catch { throw new Error('QWENWORK_ENT_RSA_PUBLIC_KEY must be an RSA public key in PEM form') }
-  const instance = optional('VPC_INSTANCE') ? requireInstance(optional('VPC_INSTANCE'), domain) : undefined
+  // QWENWORK_ENT_DOMAIN presets the enterprise host; VPC_INSTANCE stays as an
+  // alias for a bare prefix.
+  const presetInput = optional('DOMAIN') ?? optional('VPC_INSTANCE')
+  const preset = presetInput ? requireHost(presetInput, suffix) : undefined
   const accountContextPath = optional('ACCOUNT_CONTEXT_PATH') ?? DEFAULT_ACCOUNT_CONTEXT
   const teamOverride = optional('TEAM_ID')
   const site = {
@@ -168,23 +159,20 @@ export async function QwenWorkAuthPlugin({ client }) {
     userInfoPath: optional('USER_INFO_PATH') ?? '/api/v1/adapter/user/account-context?include=user,plan,quota,page,data_sharing',
     normalizeUser: v => (v?.data ?? v)?.user ?? (v?.data ?? v),
     models: [],
-    // Only `<instance>.<domain>` and its -openapi/-gateway hosts are served.
-    vpcDomain: domain,
     // The adapter prefixes this under the host's own system messages.
     systemPrompt: 'You are QwenWork Enterprise (qw), a helpful assistant. Use the instructions below and the tools available to you to assist the user.',
   }
-  const { makePlugin } = await import('./vendor/qoder.mjs')
+  const { makePlugin, _internal } = await import('./vendor/qoder.mjs')
   const plugin = await makePlugin(site)({ client })
 
-  // The adapter offers a public sign-in and, because vpcDomain is set, a VPC
-  // one. This provider serves the VPC one only: an enterprise plugin should
-  // never sign a personal account in, and its tokens stay on the instance.
-  const vpc = plugin.auth.methods.find((m) => Array.isArray(m.prompts) && m.prompts.some((p) => p.key === 'vpc'))
-  if (!vpc) throw new Error(`${NAME}: the vendored adapter offers no enterprise VPC sign-in`)
-  const adapterAuthorize = vpc.authorize
-  vpc.label = `登录 ${NAME}（专属域名）`
-  vpc.authorize = async (inputs) => {
-    const answer = await adapterAuthorize(instance ? { vpc: instance } : inputs)
+  // One host for sign-in, accounts and models. vpc is set so the adapter
+  // records "(host)" on the account and requires a named user.
+  const siteFor = (host) => ({ ...site, web: `https://${host}`, openapi: `https://${host}`, api: `https://${host}`, redirect: '', vpc: host, enterpriseHost: host })
+
+  const signIn = async (inputs) => {
+    const host = preset ?? enterpriseHost(inputs?.domain, suffix)
+    if (!host) throw new Error(`${NAME}：请输入企业域名（或设置 QWENWORK_ENT_DOMAIN）`)
+    const answer = await _internal.deviceSignIn(siteFor(host))
     const adapterCallback = answer.callback
     return {
       ...answer,
@@ -193,11 +181,9 @@ export async function QwenWorkAuthPlugin({ client }) {
       // with its team), which the desktop also reads from account-context.
       // Record that on the account, so a renewal is signed the same way.
       async callback() {
-        const account = await adapterCallback()
+        const account = { ...(await adapterCallback()), enterpriseHost: host }
         try {
-          const name = instanceName(account?.vpc, domain)
-          if (!name) return account
-          const res = await fetch(hostsFor(name, domain).openapi + accountContextPath, {
+          const res = await fetch(`https://${host}${accountContextPath}`, {
             headers: { Accept: 'application/json', Authorization: `Bearer ${account.access}` },
             signal: AbortSignal.timeout(20_000),
           })
@@ -215,42 +201,44 @@ export async function QwenWorkAuthPlugin({ client }) {
       },
     }
   }
-  if (instance) {
-    vpc.prompts = []
-  } else {
-    vpc.prompts = [{
-      type: 'text',
-      key: 'vpc',
-      message: `企业专属域名实例前缀（acme 对应 acme.${domain}），也可填完整域名`,
-      placeholder: `acme 或 acme.${domain}`,
-      validate: (v) => (instanceName(v, domain) ? undefined : `不是有效的实例：填 acme 或 https://acme.${domain}`),
-    }]
-  }
-  plugin.auth.methods = [vpc]
-  plugin.auth.icon = pluginIcon
-  plugin.auth.usage = enterpriseUsage({ domain, accountContextPath })
 
-  // An account without a VPC instance is refused before its token could be
-  // signed onto the public hosts the base site names.
+  plugin.auth.methods = [{
+    type: 'oauth',
+    label: preset ? `登录 ${NAME}（${preset}）` : `登录 ${NAME}（输入企业域名）`,
+    prompts: preset ? [] : [{
+      type: 'text',
+      key: 'domain',
+      message: `企业的千问办公旗舰版域名（管理后台地址栏里的域名，如 gehua.${suffix}）`,
+      placeholder: `gehua.${suffix}`,
+      validate: (v) => (enterpriseHost(v, suffix) ? undefined : `不是有效域名：填 gehua 或 https://gehua.${suffix}`),
+    }],
+    authorize: signIn,
+  }]
+  plugin.auth.icon = pluginIcon
+  plugin.auth.usage = enterpriseUsage({ accountContextPath })
+
+  // An account without a host is refused before its token could be signed
+  // onto the public gateway the base site names.
+  const hasHost = (a) => typeof a?.enterpriseHost === 'string' && HOST_RE.test(a.enterpriseHost)
   const innerLoader = plugin.auth.loader
   plugin.auth.loader = async (getAuth) => {
     const a = await getAuth()
-    if (a?.type === 'oauth' && !instanceName(a.vpc, domain)) throw new Error(`${NAME}：账号未绑定专属域名实例，请重新登录企业版`)
+    if (a?.type === 'oauth' && !hasHost(a)) throw new Error(`${NAME}：账号未记录企业域名，请重新登录企业版`)
     return innerLoader(getAuth)
   }
   const innerModels = plugin.provider.models
   plugin.provider.models = async (provider, ctx) => {
-    if (ctx?.auth?.type === 'oauth' && !instanceName(ctx.auth.vpc, domain)) return provider.models
+    if (ctx?.auth?.type === 'oauth' && !hasHost(ctx.auth)) return provider.models
     return innerModels(provider, ctx)
   }
 
   const innerConfig = plugin.config
   plugin.config = async (config) => {
-    // a user's own api override wins over the instance's gateway
+    // a user's own api override wins over the enterprise host
     const userApi = config?.provider?.[ID]?.api
     await innerConfig(config)
     const p = config?.provider?.[ID]
-    if (p && instance && !userApi) p.api = hostsFor(instance, domain).api
+    if (p && preset && !userApi) p.api = `https://${preset}`
   }
   return plugin
 }

@@ -11,18 +11,22 @@
 
 | Provider id | 服务 | 域名规则 |
 |---|---|---|
-| `qwenwork-ent` | 千问办公企业版（旗舰版） | `<实例>.vpc.qwenwork.cn` 等 |
+| `qwenwork-ent` | 千问办公企业版（旗舰版） | 企业自己的单域名，如 `gehua.vpc.qwenwork.cn` |
 
 ## 它和客户端做的事一致
 
-千问办公桌面端在配置了“专属域名”后，会把三个服务整体搬到实例自己的域名上；
-本插件按同一规则拼装，实例名在登录时问一次，之后记录在账号上：
+企业旗舰版是**单域名**：登录页、账号接口、模型网关都在同一个 host 上，
+就是企业后台里那个域名。本插件按这个规则工作，域名在登录时问一次，之后记录在账号上：
 
-| 用途 | 域名 |
+| 用途 | 地址 |
 |---|---|
-| 登录页 | `https://<实例>.vpc.qwenwork.cn` |
-| 账号 / token / 用量 | `https://<实例>-openapi.vpc.qwenwork.cn` |
-| 模型目录 / 对话 | `https://<实例>-gateway.vpc.qwenwork.cn` |
+| 登录页 | `https://<企业域名>/device/selectAccounts` |
+| 账号 / token / 用量 | `https://<企业域名>/api/v1/...` |
+| 模型目录 / 对话 | `https://<企业域名>/algo/...` |
+
+> 不存在 `<企业域名>-openapi` / `-gateway` 子域（实测 NXDOMAIN）。
+> 早期版本按 Qoder CN 的 VPC 规则拆分过三个域名，结果登录页能打开、扫码也能确认，
+> 但插件轮询一个不存在的 host，界面会一直停在“登录中”。0.1.1 已改为单域名。
 
 企业旗舰版登录属于 `premiumIam` 身份域：**不带 `redirect_uri`**，
 OAuth 客户端 ID 由企业部署配置下发（见下一节）。登录后插件会再读一次
@@ -52,31 +56,34 @@ magpie plugin add /path/to/magpie-plugin-qwenwork-enterprise
 export QWENWORK_ENT_CLIENT_ID='<企业部署下发的 client id>'
 ```
 
-## 登录：实例前缀
+## 登录：企业域名
 
 ```sh
 magpie plugin login qwenwork-ent
-# 企业专属域名实例前缀（acme 对应 acme.vpc.qwenwork.cn），也可填完整域名：
-# acme
+# 企业的千问办公旗舰版域名（管理后台地址栏里的域名），例如：
+# gehua.vpc.qwenwork.cn
+# 只写前缀 gehua 也行，会自动补成 gehua.vpc.qwenwork.cn
 ```
 
 想在脚本 / 无人值守环境里跳过提问：
 
 ```sh
-export QWENWORK_ENT_VPC_INSTANCE=acme
+export QWENWORK_ENT_DOMAIN=gehua.vpc.qwenwork.cn
+# 或只给前缀（用 VPC_DOMAIN 补全）
+export QWENWORK_ENT_VPC_INSTANCE=gehua
 ```
 
-以下写法都认，且都只指向同一实例（**只接受 https、不带路径/端口/查询**）：
+以下写法都认，且都指向同一个 host（**只接受 https、不带路径/端口/查询**）：
 
 ```text
-acme
-acme.vpc.qwenwork.cn
-https://acme.vpc.qwenwork.cn
-acme-openapi.vpc.qwenwork.cn
-https://acme-gateway.vpc.qwenwork.cn/
+gehua
+gehua.vpc.qwenwork.cn
+https://gehua.vpc.qwenwork.cn
+https://gehua.vpc.qwenwork.cn/
 ```
 
-`http://`、IP、其他域名、带路径或端口的一律拒绝 —— 避免把企业 token 签给错误的机房。
+`http://`、IP、`localhost` / `.local` / `.internal`、带路径或端口的一律拒绝。
+企业域名是你自己填的，插件不会把它拼成别的机房的地址。
 
 ## 企业自签 CA / 内网
 
@@ -113,9 +120,10 @@ export QWENWORK_ENT_ACCOUNT_CONTEXT_PATH='/api/v1/adapter/biz/...'
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `CLIENT_ID` | 个人版 ID | **企业部署下发的 OAuth client id**，强烈建议显式设置 |
-| `VPC_DOMAIN` | `vpc.qwenwork.cn` | 专属域名的后缀，一般不用改 |
-| `VPC_INSTANCE` | 空 | 实例前缀；设置后登录不再提问 |
-| `WEB` / `OPENAPI` / `API` | 公共网关 | 基础地址兜底；VPC 账号实际用自己的三个域名 |
+| `DOMAIN` | 空 | 企业域名；设置后登录不再提问（推荐） |
+| `VPC_DOMAIN` | `vpc.qwenwork.cn` | 只写前缀时补全用的后缀 |
+| `VPC_INSTANCE` | 空 | 前缀别名，等价于只给 `DOMAIN` 的前缀部分 |
+| `WEB` / `OPENAPI` / `API` | 公共网关 | 基础地址兜底；企业账号实际用上面的单域名 |
 | `REDIRECT` | 空 | 企业登录默认不发 `redirect_uri`，个别部署需要时再填 |
 | `REFRESH_TARGET` | `c` | 设备 token 续期的兜底 target；登录识别到组织身份时按 `biz` 续期 |
 | `TEAM_ID` | 空 | 组织 team id；`account-context` 没带 `team_id` 时手动补上，续期按 `biz` |
@@ -129,8 +137,8 @@ export QWENWORK_ENT_ACCOUNT_CONTEXT_PATH='/api/v1/adapter/biz/...'
 
 ## 安全边界
 
-- **只提供企业 VPC 登录**，不提供个人版登录方法；个人账号请用另一个插件。
-- 账号上没有绑定实例时，请求在发出前就被拒绝，**不会**回落到公共网关。
+- **只提供企业域名登录**，不提供个人版登录方法；个人账号请用另一个插件。
+- 账号上没有记录企业域名时，请求在发出前就被拒绝，**不会**回落到公共网关。
 - 上游错误在返回给调用方前会裁剪并脱敏 token（沿用适配层）。
 - 插件只服务 chat completions 端点。
 
