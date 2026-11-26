@@ -1,0 +1,22 @@
+{
+  "status": "passed",
+  "kind": "mocked enterprise provider integration; no live QwenWork requests",
+  "checks": [
+    "Verified enterprise defaults produce a VPC login URL without network access",
+    "Only <instance>.vpc hosts are accepted, with no path, port or foreign domain",
+    "Endpoint, RSA key, domain and instance validation reject invalid inputs",
+    "Enterprise registration, device login and the instance on the account use the instance hosts",
+    "Usage reports the organisation, plan and both credit pools from the instance",
+    "An account without an instance is refused instead of using the public hosts",
+    "Chat is rewritten as QwenWork's agent request with the host's system message",
+    "The host's tools ride along and a tool call comes back structured",
+    "Inline <tool_call> text is lifted into structured tool calls",
+    "Tool results ride back as tool messages",
+    "Stream requests return one SSE completion",
+    "Invalid magpie access token fails before another chat request",
+    "Client-facing errors carry no token-shaped text",
+    "QWENWORK_ENT_VPC_INSTANCE makes the sign-in non-interactive"
+  ],
+  "sourceSha256": "e92adcde46873dab76b6be8d02eea6d15e71d1073cd954e9bb1ec2d8289b3b2b",
+  "adapterSha256": "509249ee6953aa036c9280e4164a2f6b0ca1be8478d847c655313a72ec212194"
+}
