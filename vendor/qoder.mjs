@@ -749,6 +749,12 @@ function failure(status, text) {
     return { status: 401, message: "the sign-in lapsed — sign in again" + said }
   }
   if (status === 429 || msg.toLowerCase().includes("quota")) return { status: 429, message: "upstream refused request: " + msg }
+  // qwenwork-ent patch: the enterprise gateway answers a hiccup in its own
+  // backend with a 400 and a fixed 53-byte body, {"code":"400","message":
+  // "Error in upstream response"} — nothing about our request. Replaying the
+  // very request that got one succeeds, so hand back a retryable status: a 400
+  // tells the caller the request was wrong, and ends its turn for good.
+  if (status === 400 && /error in upstream response/i.test(msg)) return { status: 503, message: msg }
   return { status, message: msg }
 }
 

@@ -223,6 +223,16 @@ try {
   assert.ok(!bodyText.includes('COSY.') && !/ey[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+\./.test(bodyText), 'no token-shaped text reaches the caller')
   checks.push('Client-facing errors carry no token-shaped text')
 
+  // The gateway's own hiccup arrives as a 400 carrying a fixed 53-byte body,
+  // the same one an out-of-range max_tokens gets. Replaying such a request
+  // succeeds, so it must reach the caller retryable rather than as a bad
+  // request that ends the turn.
+  agentReplies.push(new Response(JSON.stringify({ code: '400', message: 'Error in upstream response' }), { status: 400 }))
+  const hiccup = await loader.fetch(values.API + '/chat/completions', { body: JSON.stringify(chat()) })
+  assert.equal(hiccup.status, 503, "an upstream hiccup is retryable, not a bad request")
+  assert.match((await hiccup.json()).error.message, /Error in upstream response/)
+  checks.push('An upstream hiccup comes back retryable, not as a bad request')
+
   process.env.QWENWORK_ENT_DOMAIN = HOST
   const preset = await QwenWorkAuthPlugin({ client: {} })
   assert.equal(preset.auth.methods[0].prompts.length, 0)

@@ -6,7 +6,7 @@ The shared QwenWork/Qoder adapter copied from
 `448f52d9bcfe3e2f20e3eb7dffb386e5ae0d87e4f4eaf3d2e20f5c76c4d4b63b`, MIT — see
 `LICENSE` here).
 
-It is **not** byte-identical to upstream. This fork carries three small
+It is **not** byte-identical to upstream. This fork carries four small
 patches, all of them the same behaviour magpie's community QwenWork plugin has:
 
 ## 1. An enterprise flagship serves everything on one host
@@ -46,6 +46,19 @@ sends.
 `_internal` also exports `deviceSignIn`, so `index.mjs` can start the device
 flow against the enterprise's one host without the adapter's split-host VPC
 method.
+
+## 4. A hiccup in the gateway's own backend is retryable, not a bad request
+
+The enterprise gateway answers an upstream failure with a 400 and a fixed
+53-byte body, `{"code":"400","message":"Error in upstream response"}` — the
+same body a genuinely out-of-range `max_tokens` gets. Replaying a request that
+received one succeeds, so the 400 describes the backend, not the request:
+`failure()` hands it back as a 503 so the caller retries instead of ending its
+turn.
+
+```js
+if (status === 400 && /error in upstream response/i.test(msg)) return { status: 503, message: msg }
+```
 
 Everything else is upstream. The upstream `check.mjs` still passes against this
 copy (personal accounts take the unchanged path). When updating from upstream,

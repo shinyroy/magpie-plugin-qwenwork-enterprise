@@ -15,8 +15,9 @@
     "Stream requests return one SSE completion",
     "Invalid magpie access token fails before another chat request",
     "Client-facing errors carry no token-shaped text",
+    "An upstream hiccup comes back retryable, not as a bad request",
     "QWENWORK_ENT_DOMAIN (and the VPC_INSTANCE alias) make the sign-in non-interactive"
   ],
-  "sourceSha256": "f4dc85ce43b4a1762061132c31fcddaf8fd4d5639106dd968c7992d0d53356a8",
-  "adapterSha256": "c1266ff16f0465f4d095481b2241e50570fab44bb93ef1abc24744a6387a8328"
+  "sourceSha256": "21dab3858b8f6ad0384d3de0ea2a4fe8024a407a2f138e5710f3e8656392d729",
+  "adapterSha256": "f9bb4e609dbfbebd134259d6c51c4460372c754f7000e0da44f7ab9ee9805c9c"
 }
