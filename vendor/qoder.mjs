@@ -52,6 +52,11 @@ const REFRESH_LEAD = 5 * 60 * 1000 // a chat token this close to its end is refr
 const RENEW_LEAD = 10 * 60 * 1000 // and this close, magpie renews it ahead of time (auth.refresh)
 const KEEP_SPENT_MS = 60 * 60 * 1000 // how long what a spent refresh token gave is remembered
 const DAY = 24 * 60 * 60 * 1000
+// A chat that failed before the gateway answered anything is sent again here:
+// the enterprise gateway's own hiccup is a 400 (see failure()) and not every
+// caller retries a 5xx, so the plugin cannot rely on being asked again.
+const RETRY_ATTEMPTS = 3
+const RETRY_BACKOFF = 400 // ms before the first retry, doubled each time
 const CHAT = "@ai-sdk/openai-compatible"
 
 // Qoder's embedded 1024-bit RSA key (from the client's cosy source): it wraps
@@ -758,6 +763,18 @@ function failure(status, text) {
   return { status, message: msg }
 }
 
+// retriable says a chat failure was the gateway's own backend rather than the
+// request: the same request replayed afterwards succeeds. Its hiccup carries a
+// fixed 53-byte body and 400 (failure() turns it into a 503); a 5xx or a read
+// that never got an answer is the same story. A refused sign-in, a quota and a
+// 4xx the gateway aimed at the request stay as they are.
+function retriable(status, message = "") {
+  const said = String(message ?? "").toLowerCase()
+  if (status === 400) return said.includes("error in upstream response")
+  if (status === 408 || status === 425 || status === 429) return false // 429 is a quota: retrying spends it
+  return status >= 500 || status === 0
+}
+
 // errorResponse is a failure as OpenAI's API gives it. signIn is what it
 // means for the account (magpie's X-Magpie-Sign-In): a 401 keeps it unless
 // told expired, since the built-in marked only a refused refresh.
@@ -958,12 +975,35 @@ async function* events(body) {
 // answer turns Qoder's reply into the chat completion OpenAI's API gives.
 // A failure before the answer keeps its status; one after it ends the
 // stream with an error.
-async function answer(res, chat) {
+//
+// try1 is the first attempt and send obtains another one, so a failure that
+// arrives before any of the reply was passed on is retried here. The caller
+// never learns it happened — whichever agent it is, and whether or not that
+// agent retries a 5xx itself.
+async function answer(try1, chat, send) {
   const id = "chatcmpl-" + hexID()
   const created = Math.floor(Date.now() / 1000)
-  const it = events(res.body)
-  const first = await it.next()
-  if (first.value?.error) return errorResponse(first.value.error)
+  let attempt = try1
+  let it
+  let first
+  for (let n = 1; ; n++) {
+    if (!attempt.ok) {
+      const worth = !attempt.aborted && retriable(attempt.status, attempt.message)
+      if (!worth || n > RETRY_ATTEMPTS) return errorResponse(attempt.error)
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF * 2 ** (n - 1)))
+      attempt = await send()
+      continue
+    }
+    it = events(attempt.res.body)
+    first = await it.next()
+    // the gateway took the request, then failed before any of the reply
+    if (first.value?.error) {
+      const e = first.value.error
+      attempt = { ok: false, error: e, status: e.status, message: e.message }
+      continue
+    }
+    break
+  }
   if (first.done) return errorResponse({ status: 502, message: "upstream ended without an answer" })
 
   if (!chat.stream) {
@@ -1340,21 +1380,34 @@ export const makePlugin = (site) => async ({ client }) => {
     if (!m) return errorResponse({ status: 400, message: `unknown or disabled model "${chat.model}"` })
     const CHAT_URL = siteOf(site, cred).api + CHAT_PATH
     const wire = encodeBody(JSON.stringify(qoderBody(chat, m, site)))
-    const headers = {
-      ...cosyHeaders(CHAT_URL, cred, wire, site),
+    // the headers a chat adds to the COSY envelope, unchanged across retries
+    const chatHeaders = {
       Accept: "text/event-stream",
       "Cache-Control": "no-cache",
       "X-Model-Key": m.key,
       "X-Model-Source": m.source,
     }
-    let res
-    try {
-      res = await fetch(CHAT_URL, { method: "POST", headers, body: wire, signal: init.signal })
-    } catch (e) {
-      return errorResponse({ status: 502, message: e.message })
+    // send asks for the reply once, with a COSY envelope of its own: it is
+    // signed over the date and a fresh request id, so a retry after a while
+    // cannot reuse the first one. A refusal keeps its status and message with
+    // it, for answer to judge and, if it may, retry.
+    const send = async () => {
+      const h = { ...cosyHeaders(CHAT_URL, cred, wire, site), ...chatHeaders }
+      try {
+        const r = await fetch(CHAT_URL, { method: "POST", headers: h, body: wire, signal: init.signal })
+        if (r.ok) return { ok: true, res: r }
+        const f = failure(r.status, (await r.text()).slice(0, 1 << 20))
+        return { ok: false, error: f, status: f.status, message: f.message }
+      } catch (e) {
+        // the caller cancelled: that must not be read as the gateway failing
+        const aborted = e?.name === "AbortError" || init.signal?.aborted === true
+        return { ok: false, aborted, error: { status: 502, message: e.message }, status: 502, message: e.message }
+      }
     }
-    if (!res.ok) return errorResponse(failure(res.status, (await res.text()).slice(0, 1 << 20)))
-    return answer(res, chat)
+    const firstTry = await send()
+    // answer judges it too: a refusal worth asking for again is retried there,
+    // before anything of it reaches the caller
+    return answer(firstTry, chat, send)
   }
 
   return {

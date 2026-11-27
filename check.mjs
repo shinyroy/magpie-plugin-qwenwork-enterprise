@@ -225,13 +225,21 @@ try {
 
   // The gateway's own hiccup arrives as a 400 carrying a fixed 53-byte body,
   // the same one an out-of-range max_tokens gets. Replaying such a request
-  // succeeds, so it must reach the caller retryable rather than as a bad
-  // request that ends the turn.
-  agentReplies.push(new Response(JSON.stringify({ code: '400', message: 'Error in upstream response' }), { status: 400 }))
-  const hiccup = await loader.fetch(values.API + '/chat/completions', { body: JSON.stringify(chat()) })
-  assert.equal(hiccup.status, 503, "an upstream hiccup is retryable, not a bad request")
-  assert.match((await hiccup.json()).error.message, /Error in upstream response/)
-  checks.push('An upstream hiccup comes back retryable, not as a bad request')
+  // succeeds, so the adapter asks again itself: one hiccup never reaches the
+  // caller, whichever agent it is and whether or not that agent retries a 5xx.
+  const hiccupBody = JSON.stringify({ code: '400', message: 'Error in upstream response' })
+  agentReplies.push(new Response(hiccupBody, { status: 400 }))
+  const absorbed = await loader.fetch(values.API + '/chat/completions', { body: JSON.stringify(chat()) })
+  assert.equal(absorbed.status, 200, 'a single hiccup is retried inside the adapter')
+  assert.equal((await absorbed.json()).choices[0].message.content, 'hello fixture reply')
+  checks.push('An upstream hiccup is retried inside the adapter, not shown to the caller')
+
+  // one that outlasts the retries is still reported, and as retryable
+  for (let i = 0; i < 4; i++) agentReplies.push(new Response(hiccupBody, { status: 400 }))
+  const persistent = await loader.fetch(values.API + '/chat/completions', { body: JSON.stringify(chat()) })
+  assert.equal(persistent.status, 503, 'a hiccup that outlasts the retries is reported retryable')
+  assert.match((await persistent.json()).error.message, /Error in upstream response/)
+  checks.push('A hiccup outlasting the retries comes back retryable, not as a bad request')
 
   process.env.QWENWORK_ENT_DOMAIN = HOST
   const preset = await QwenWorkAuthPlugin({ client: {} })

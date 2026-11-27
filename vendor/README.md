@@ -6,7 +6,7 @@ The shared QwenWork/Qoder adapter copied from
 `448f52d9bcfe3e2f20e3eb7dffb386e5ae0d87e4f4eaf3d2e20f5c76c4d4b63b`, MIT — see
 `LICENSE` here).
 
-It is **not** byte-identical to upstream. This fork carries four small
+It is **not** byte-identical to upstream. This fork carries five small
 patches, all of them the same behaviour magpie's community QwenWork plugin has:
 
 ## 1. An enterprise flagship serves everything on one host
@@ -59,6 +59,27 @@ turn.
 ```js
 if (status === 400 && /error in upstream response/i.test(msg)) return { status: 503, message: msg }
 ```
+
+## 5. That hiccup is retried here, not left to the caller
+
+Reporting it as a 503 assumes the caller retries a 5xx. Not every agent does —
+one that treats 503 as final ends the turn exactly as a 400 did. So `answer()`
+takes the first attempt plus a `send` that makes another, and asks again while
+the failure arrived before any of the reply was passed on:
+
+```js
+const worth = !attempt.aborted && retriable(attempt.status, attempt.message)
+if (!worth || n > RETRY_ATTEMPTS) return errorResponse(attempt.error)
+```
+
+`retriable()` answers the same question the 503 does: the gateway's own backend
+failed, not our request. Three attempts, 400 ms doubling. A 429 is never
+retried (it spends quota), a cancellation is never retried, and once the reply
+has started streaming nothing is retried — a half-sent answer cannot be taken
+back, so a late failure still ends the stream with an error.
+
+Each attempt signs a fresh COSY envelope, so the retry carries a new request id
+and date rather than repeating a signature the gateway may already have seen.
 
 Everything else is upstream. The upstream `check.mjs` still passes against this
 copy (personal accounts take the unchanged path). When updating from upstream,

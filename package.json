@@ -1,6 +1,6 @@
 {
   "name": "magpie-plugin-qwenwork-enterprise",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "QwenWork 企业版（旗舰版·专属域名/VPC）as a magpie / OpenCode provider: device sign-in on the enterprise instance, models and agent chats served from <instance>.vpc hosts.",
   "type": "module",
   "main": "./index.mjs",
